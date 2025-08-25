@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Game</title>
+    <style>
+        /* --- General Setup --- */
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+
+        /* --- Mobile Controls --- */
+        #joystick-container {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 150px;
+            height: 150px;
+        }
+        #action-buttons {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .action-button {
+            width: 60px;
+            height: 60px;
+            margin: 10px;
+            border-radius: 50%;
+            border: 2px solid white;
+            background: rgba(128, 128, 128, 0.5);
+            color: white;
+            font-size: 16px;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* --- Game UI --- */
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            color: white;
+            font-family: sans-serif;
+            text-shadow: 1px 1px 2px black;
+        }
+        #stats-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+        }
+        .stat {
+            margin-bottom: 10px;
+        }
+        .bar-background {
+            width: 200px;
+            height: 20px;
+            background-color: rgba(0,0,0,0.5);
+            border: 1px solid white;
+            border-radius: 5px;
+        }
+        .bar {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.2s linear;
+        }
+        #health-bar { background-color: #c0392b; }
+        #hunger-bar { background-color: #f39c12; }
+
+        /* --- Minimap --- */
+        #minimap-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 200px;
+            height: 200px;
+            background-color: rgba(100, 150, 100, 0.7);
+            border: 2px solid white;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        #minimap {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+        #player-dot {
+            position: absolute;
+            width: 0;
+            height: 0;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-bottom: 10px solid yellow;
+            transform-origin: 50% 50%;
+        }
+        .house-dot {
+            position: absolute;
+            width: 15px;
+            height: 15px;
+            background-color: #8B4513;
+            border: 1px solid black;
+            transform-origin: center;
+        }
+    </style>
+</head>
+<body>
+    <!-- UI Elements -->
+    <div id="ui-container">
+        <div id="stats-container">
+            <div class="stat">
+                <span>Health</span>
+                <div class="bar-background">
+                    <div id="health-bar" class="bar" style="width: 100%;"></div>
+                </div>
+            </div>
+            <div class="stat">
+                <span>Hunger</span>
+                <div class="bar-background">
+                    <div id="hunger-bar" class="bar" style="width: 100%;"></div>
+                </div>
+            </div>
+        </div>
+        <div id="minimap-container">
+            <div id="minimap">
+                <div id="player-dot"></div>
+            </div>
+        </div>
+    </div>
+    <!-- Mobile Controls -->
+    <div id="joystick-container"></div>
+    <div id="action-buttons">
+        <button id="jump-button" class="action-button">Jump</button>
+        <button id="crouch-button" class="action-button">Crouch</button>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/nipplejs/dist/nipplejs.min.js"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- CONFIGURATION ---
+        const config = {
+            worldSize: 100,
+            camera: {
+                offset: new THREE.Vector3(0, 4, 8),
+                lerpFactor: 0.1,
+            },
+            player: {
+                moveSpeed: 5,
+                turnSpeed: 3,
+                jumpForce: 5,
+                gravity: -9.8,
+            },
+            stats: {
+                hungerRate: 1,
+                healthRate: 2,
+            },
+            minimap: {
+                size: 200,
+            }
+        };
+
+        // --- GLOBAL STATE ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        const clock = new THREE.Clock();
+        const houses = [];
+        const playerState = {
+            velocity: new THREE.Vector3(),
+            isGrounded: false,
+            originalHeight: 2, // Corresponds to BoxGeometry height
+            stats: { health: 100, hunger: 100 }
+        };
+        const controls = {
+            forward: false, backward: false, left: false, right: false,
+            jump: false, crouch: false,
+            joystickForward: 0, joystickTurn: 0,
+        };
+
+        // --- INITIALIZATION ---
+        function init() {
+            // Renderer
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Scene
+            scene.background = new THREE.Color(0x87ceeb);
+
+            // Lighting
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(5, 10, 7.5);
+            scene.add(dirLight);
+
+            // Ground
+            const ground = new THREE.Mesh(
+                new THREE.PlaneGeometry(config.worldSize, config.worldSize),
+                new THREE.MeshStandardMaterial({ color: 0x228B22 })
+            );
+            ground.rotation.x = -Math.PI / 2;
+            scene.add(ground);
+
+            // Player
+            const player = new THREE.Mesh(
+                new THREE.BoxGeometry(1, playerState.originalHeight, 1),
+                new THREE.MeshStandardMaterial({ color: 0x0000ff })
+            );
+            player.position.y = playerState.originalHeight / 2;
+            scene.add(player);
+            // Make player a global so other functions can access it
+            window.player = player;
+
+            // Environment
+            createHouses();
+            setupMinimap();
+
+            // Controls
+            setupControls();
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize);
+
+            // Start Loop
+            animate();
+        }
+
+        // --- OBJECT CREATION ---
+        function createHouse() {
+            const house = new THREE.Group();
+            const base = new THREE.Mesh(new THREE.BoxGeometry(4, 2.5, 3), new THREE.MeshStandardMaterial({ color: 0xac8e68 }));
+            base.position.y = 1.25;
+            house.add(base);
+            const roof = new THREE.Mesh(new THREE.ConeGeometry(3, 1.5, 4), new THREE.MeshStandardMaterial({ color: 0x8B4513 }));
+            roof.position.y = 2.5 + 0.75;
+            roof.rotation.y = Math.PI / 4;
+            house.add(roof);
+            const door = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.2, 0.1), new THREE.MeshStandardMaterial({ color: 0x654321 }));
+            door.position.y = 0.6;
+            door.position.z = 1.51;
+            house.add(door);
+            return house;
+        }
+
+        function createHouses() {
+            const housePositions = [
+                { x: -10, z: -5, rot: 0 }, { x: 10, z: -5, rot: Math.PI },
+                { x: 0, z: -15, rot: Math.PI / 2 }, { x: -12, z: 10, rot: -Math.PI / 3 },
+            ];
+            housePositions.forEach(pos => {
+                const houseInstance = createHouse();
+                houseInstance.position.set(pos.x, 0, pos.z);
+                houseInstance.rotation.y = pos.rot;
+                scene.add(houseInstance);
+                const houseBox = new THREE.Box3();
+                houseInstance.traverse(child => {
+                    if (child.isMesh) {
+                        child.geometry.computeBoundingBox();
+                        houseBox.union(child.geometry.boundingBox.clone().applyMatrix4(child.matrixWorld));
+                    }
+                });
+                houses.push({ mesh: houseInstance, boundingBox: houseBox });
+            });
+        }
+
+        // --- UI SETUP ---
+        function setupMinimap() {
+            const minimap = document.getElementById('minimap');
+            const mapSize = config.minimap.size;
+            const worldSize = config.worldSize;
+            houses.forEach(house => {
+                const dot = document.createElement('div');
+                dot.className = 'house-dot';
+                const x = (house.mesh.position.x / worldSize) * mapSize + (mapSize / 2);
+                const z = (house.mesh.position.z / worldSize) * mapSize + (mapSize / 2);
+                dot.style.left = `${x - 7.5}px`;
+                dot.style.top = `${z - 7.5}px`;
+                dot.style.transform = `rotate(${house.mesh.rotation.y}rad)`;
+                minimap.appendChild(dot);
+            });
+        }
+
+        // --- CONTROLS SETUP ---
+        function setupControls() {
+            // Keyboard
+            window.addEventListener('keydown', (e) => {
+                switch (e.key.toLowerCase()) {
+                    case 'w': controls.forward = true; break;
+                    case 's': controls.backward = true; break;
+                    case 'a': controls.left = true; break;
+                    case 'd': controls.right = true; break;
+                    case ' ': controls.jump = true; break;
+                    case 'c': controls.crouch = true; break;
+                }
+            });
+            window.addEventListener('keyup', (e) => {
+                switch (e.key.toLowerCase()) {
+                    case 'w': controls.forward = false; break;
+                    case 's': controls.backward = false; break;
+                    case 'a': controls.left = false; break;
+                    case 'd': controls.right = false; break;
+                    case ' ': controls.jump = false; break;
+                    case 'c': controls.crouch = false; break;
+                }
+            });
+
+            // Mobile
+            if ('ontouchstart' in window) {
+                const joystick = nipplejs.create({
+                    zone: document.getElementById('joystick-container'),
+                    mode: 'static', position: { left: '75px', bottom: '75px' },
+                    color: 'white', size: 150
+                });
+                joystick.on('move', (evt, data) => {
+                    const angle = data.angle.radian;
+                    const force = Math.min(data.force, 1);
+                    controls.joystickForward = Math.sin(angle) * force;
+                    controls.joystickTurn = -Math.cos(angle) * force;
+                });
+                joystick.on('end', () => { controls.joystickForward = 0; controls.joystickTurn = 0; });
+
+                document.getElementById('jump-button').addEventListener('touchstart', (e) => { e.preventDefault(); if (playerState.isGrounded) controls.jump = true; });
+                const crouchButton = document.getElementById('crouch-button');
+                crouchButton.addEventListener('touchstart', (e) => { e.preventDefault(); controls.crouch = true; });
+                crouchButton.addEventListener('touchend', (e) => { e.preventDefault(); controls.crouch = false; });
+            } else {
+                document.getElementById('joystick-container').style.display = 'none';
+                document.getElementById('action-buttons').style.display = 'none';
+            }
+        }
+
+        // --- GAME LOGIC FUNCTIONS ---
+        function updateStats(delta) {
+            if (playerState.stats.hunger > 0) {
+                playerState.stats.hunger -= config.stats.hungerRate * delta;
+            } else {
+                playerState.stats.health -= config.stats.healthRate * delta;
+            }
+            playerState.stats.hunger = Math.max(0, playerState.stats.hunger);
+            playerState.stats.health = Math.max(0, playerState.stats.health);
+            document.getElementById('health-bar').style.width = `${playerState.stats.health}%`;
+            document.getElementById('hunger-bar').style.width = `${playerState.stats.hunger}%`;
+        }
+
+        function updatePlayer(delta) {
+            const playerHeight = player.geometry.parameters.height;
+            if (controls.crouch) player.scale.y = 0.5;
+            else player.scale.y = 1;
+
+            if (!playerState.isGrounded) playerState.velocity.y += config.player.gravity * delta;
+
+            const groundY = (playerHeight * player.scale.y) / 2;
+            let targetY = player.position.y + playerState.velocity.y * delta;
+            if (targetY <= groundY) {
+                playerState.velocity.y = 0;
+                player.position.y = groundY;
+                playerState.isGrounded = true;
+            } else {
+                player.position.y = targetY;
+                playerState.isGrounded = false;
+            }
+
+            if (controls.jump && playerState.isGrounded) {
+                playerState.velocity.y = config.player.jumpForce;
+                playerState.isGrounded = false;
+                controls.jump = false;
+            }
+
+            const horizontalPrevPosition = player.position.clone();
+            let turn = -controls.joystickTurn;
+            if(controls.left) turn = 1; if(controls.right) turn = -1;
+            player.rotation.y += turn * config.player.turnSpeed * delta;
+
+            let forward = controls.joystickForward;
+            if(controls.forward) forward = 1; if(controls.backward) forward = -1;
+
+            const moveDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+            player.position.add(moveDirection.multiplyScalar(forward * config.player.moveSpeed * delta));
+
+            const playerBox = new THREE.Box3().setFromObject(player);
+            for (const house of houses) {
+                if (playerBox.intersectsBox(house.boundingBox)) {
+                    player.position.copy(horizontalPrevPosition);
+                    break;
+                }
+            }
+        }
+
+        function updateCamera() {
+            const idealOffset = config.camera.offset.clone().applyQuaternion(player.quaternion);
+            camera.position.lerp(player.position.clone().add(idealOffset), config.camera.lerpFactor);
+            camera.lookAt(player.position);
+        }
+
+        function updateMinimap() {
+            const playerDot = document.getElementById('player-dot');
+            const mapSize = config.minimap.size;
+            const worldSize = config.worldSize;
+            const playerMapX = (player.position.x / worldSize) * mapSize + (mapSize / 2);
+            const playerMapZ = (player.position.z / worldSize) * mapSize + (mapSize / 2);
+            playerDot.style.transform = `translate(${playerMapX - 5}px, ${playerMapZ - 5}px) rotate(${player.rotation.y}rad)`;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- MAIN ANIMATION LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            updateStats(delta);
+            updatePlayer(delta);
+            updateCamera();
+            updateMinimap();
+            renderer.render(scene, camera);
+        }
+
+        // --- START ---
+        init();
+    </script>
+</body>
+</html>
